@@ -14,7 +14,7 @@ import click
 import logging
 
 from .connection import ConnectionConfig
-from .collector import run_collector
+from .collector import run_collector, CollectorConfig
 from .csv_collector import import_csv
 from .feature_builder import build_geopackage
 from .staging import StagingDB
@@ -40,21 +40,12 @@ def cli(verbose):
               help="Verbindungsport: tcp://localhost:4444 (Android) oder /dev/rfcomm0 (Linux)")
 @click.option("--db", default="surveylog.db", show_default=True,
               help="Pfad zur Staging-Datenbank")
-@click.option("--timeout", default=5.0, show_default=True,
-              help="Verbindungs-Timeout in Sekunden")
-@click.option("--wait", default=0.8, show_default=True,
-              help="Wartezeit nach Messauslösung (Sekunden)")
-@click.option("--prism/--no-prism", default=False,
-              help="Mit Reflektor messen (Standard: reflektorlos)")
-def collect(port, db, timeout, wait, prism):
-    """Live-Aufnahme von einer Totalstation (GeoCOM)."""
-    config = ConnectionConfig(
-        port=port,
-        timeout=timeout,
-        measure_wait=wait,
-        reflectorless=not prism,
-    )
-    run_collector(config, db)
+@click.option("--interval", default=0.3, show_default=True,
+              help="Polling-Intervall in Sekunden (Standard: 0.3 = ca. 3 Hz)")
+def collect(port, db, interval):
+    """Passives Polling: empfängt Messungen vom TS07 (PID + E/N/H via GSI)."""
+    conn_config = ConnectionConfig(port=port, timeout=0.5)
+    run_collector(conn_config, db, poll_interval=interval)
 
 
 # ── import ────────────────────────────────────────────────────────────────────

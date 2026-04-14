@@ -1,170 +1,138 @@
 """
-Interaktiver GeoCOM Collector für surveylog.
+GSI Polling-Collector für surveylog.
 
-Ablauf:
-  1. Benutzer gibt PID ein (z.B. FP00010001)
-  2. surveylog misst (TMC_DO_MEASURE + TMC_GET_COORDINATE)
-  3. Punkt wird in Staging-DB gespeichert
-  4. Weiter mit nächstem Punkt
+Architektur (passives Polling):
+  1. surveylog sendet %R1Q,2115: an die Totalstation
+  2. TS07 antwortet mit letztem Messsatz im GSI-Format
+  3. surveylog parst PID + E + N + H aus dem GSI-String
+  4. Duplikat-Schutz: nur neue Messungen werden gespeichert
+  5. Kurze Pause, dann wieder von vorne (Polling-Loop)
 
-Leere Eingabe → wiederholt letzten PID + 1 (Sequenznummer +1)
-'quit' oder Ctrl+C → beendet
+Das Instrument behält die volle Kontrolle:
+  - PID wird am TS07 eingegeben
+  - Messung wird am TS07 ausgelöst
+  - surveylog lauscht nur und speichert
+
+Verbindung über TCP-Bridge (Android):
+  BT/TCP Bridge App: Bluetooth SPP → TCP localhost:4444
+  surveylog: --port tcp://localhost:4444
+
+Verbindung seriell (Linux):
+  surveylog: --port /dev/rfcomm0
 """
 
 import time
 import logging
-from typing import Optional
+from dataclasses import dataclass
 
 from .connection import TotalstationConnection, ConnectionConfig
-from .geocom_constants import RC, RPC, TMC_MODE
-from .pid_parser import parse_pid, next_pid
+from .geocom_constants import RPC
+from .gsi_parser import parse_gsi_response, measurement_key
 from .staging import StagingDB, StagingPoint
 
 logger = logging.getLogger(__name__)
 
+# GeoCOM RPC für GSI-Messsatz (TMC_GetSimpleMea → GSI-Format)
+RPC_GET_LAST_MEASURE_GSI = 2115
 
-def measure_point(conn: TotalstationConnection, config: ConnectionConfig) -> Optional[dict]:
+
+@dataclass
+class CollectorConfig:
+    """Konfiguration für den Polling-Collector."""
+    poll_interval: float = 0.3    # Sekunden zwischen Polls (ca. 3 Hz)
+    timeout: float = 0.5          # Timeout pro Request
+    reconnect_delay: float = 3.0  # Wartezeit vor Reconnect-Versuch
+
+
+def run_collector(conn_config: ConnectionConfig, db_path: str,
+                  poll_interval: float = 0.3):
     """
-    Führt eine Messung durch:
-      1. TMC_DO_MEASURE (Messung auslösen)
-      2. Warten
-      3. TMC_GET_COORDINATE (Koordinaten abfragen)
+    Startet den Polling-Collector.
 
-    Gibt {"x": ..., "y": ..., "z": ...} zurück oder None bei Fehler.
-    """
-    # Messung auslösen
-    mode = TMC_MODE.REFLLESS if config.reflectorless else TMC_MODE.DEF_DIST
-    result = conn.send_command(RPC.TMC_DO_MEASURE, mode, 1)
-
-    rc = result.get("rc", -1)
-    if RC.is_fatal(rc):
-        logger.error(f"TMC_DO_MEASURE fehlgeschlagen: RC {rc} — {RC.describe(rc)}")
-        return None
-    if RC.is_warning(rc):
-        logger.warning(f"TMC_DO_MEASURE Warnung: RC {rc} — {RC.describe(rc)}")
-
-    # Warten bis Messung abgeschlossen
-    time.sleep(config.measure_wait)
-
-    # Koordinaten abfragen
-    result = conn.send_command(RPC.TMC_GET_COORDINATE, 0, 1, 0)
-    rc = result.get("rc", -1)
-
-    if RC.is_fatal(rc):
-        logger.error(f"TMC_GET_COORDINATE fehlgeschlagen: RC {rc} — {RC.describe(rc)}")
-        return None
-    if RC.is_warning(rc):
-        logger.warning(f"TMC_GET_COORDINATE Warnung: RC {rc} — {RC.describe(rc)}")
-
-    values = result.get("values", [])
-    if len(values) < 3:
-        logger.error(f"Unvollständige Koordinaten: {values}")
-        return None
-
-    try:
-        return {
-            "x": float(values[0]),
-            "y": float(values[1]),
-            "z": float(values[2]),
-            "rc": rc,
-        }
-    except (ValueError, TypeError) as e:
-        logger.error(f"Koordinaten-Parse-Fehler: {e} — {values}")
-        return None
-
-
-def run_collector(config: ConnectionConfig, db_path: str):
-    """
-    Startet den interaktiven Collector.
-
-    Verbindet sich mit der Totalstation und wartet auf PID-Eingaben.
+    Pollt kontinuierlich %R1Q,2115: und speichert neue Messungen.
+    Läuft bis Ctrl+C.
     """
     db = StagingDB(db_path)
-    conn = TotalstationConnection(config)
+    conn = TotalstationConnection(conn_config)
 
-    print(f"\n  surveylog — Interaktiver Collector")
-    print(f"  Port:   {config.port}")
-    print(f"  DB:     {db_path}")
-    print(f"  Modus:  {'Reflektorlos' if config.reflectorless else 'Mit Reflektor'}")
-    print()
+    print(f"\n  surveylog — GSI Polling Collector")
+    print(f"  Port:     {conn_config.port}")
+    print(f"  DB:       {db_path}")
+    print(f"  Polling:  {poll_interval}s ({1/poll_interval:.0f} Hz)")
+    print(f"\n  Bedienung: Alles am Instrument (TS07)")
+    print(f"  PID eingeben + Messung auslösen → surveylog speichert automatisch")
+    print(f"  Beenden: Ctrl+C\n")
 
-    # Verbindung aufbauen
-    print(f"  Verbinde mit {config.port}...")
-    if not conn.connect():
-        print("  ✗ Verbindung fehlgeschlagen.")
-        print()
-        if config._use_tcp:
-            print("  Hinweis: Stelle sicher dass die BT/TCP Bridge App läuft")
-            print("  und mit der Totalstation verbunden ist.")
-        return
-
-    # Ping testen
-    print("  Teste Verbindung...")
-    if not conn.ping():
-        print("  ✗ Totalstation antwortet nicht.")
-        conn.disconnect()
-        return
-
-    print("  ✓ Verbunden!\n")
-    print("  Eingabe: PID (z.B. FP00010001) + Enter → misst")
-    print("           Leere Eingabe + Enter           → wiederholt letzten PID+1")
-    print("           'quit' + Enter                  → beendet")
-    print()
-
-    last_pid = None
+    last_key = None
     count = 0
+    errors = 0
+
+    def connect_loop():
+        """Verbindet, mit stummem Retry bei Fehler."""
+        while True:
+            print(f"  Verbinde mit {conn_config.port}...", end="", flush=True)
+            if conn.connect():
+                print(" ✓")
+                return
+            print(f" ✗  Retry in {conn_config.reconnect_delay}s...")
+            time.sleep(conn_config.reconnect_delay)
 
     try:
+        connect_loop()
+        print("  Warte auf Messungen...\n")
+
         while True:
-            try:
-                pid_input = input("  PID: ").strip()
-            except EOFError:
-                break
+            # Anfrage senden
+            result = conn.send_command(RPC_GET_LAST_MEASURE_GSI)
 
-            if pid_input.lower() in ("quit", "exit", "q"):
-                break
-
-            # Leere Eingabe → letzten PID wiederholen + 1
-            if pid_input == "":
-                if last_pid is None:
-                    print("  → Noch kein PID eingegeben.")
-                    continue
-                pid_input = next_pid(last_pid)
-                print(f"  → Verwende: {pid_input}")
-
-            # PID validieren
-            pid_input = pid_input.upper()
-            parsed = parse_pid(pid_input)
-            if parsed is None:
-                print(f"  ✗ Ungültiger PID: '{pid_input}'")
-                print("    Format: CCSSSSNNNN (z.B. FP00010001)")
+            if result["rc"] == -1:
+                # Verbindungsabbruch → stumm reconnecten
+                errors += 1
+                logger.warning(f"Verbindungsfehler ({errors}x), reconnecte...")
+                time.sleep(conn_config.reconnect_delay)
+                connect_loop()
                 continue
 
-            # Messen
-            print(f"  Messe {pid_input}...", end="", flush=True)
-            measurement = measure_point(conn, config)
+            errors = 0  # Reset bei Erfolg
+
+            # GSI parsen
+            raw = result.get("raw", "")
+            measurement = parse_gsi_response(raw)
 
             if measurement is None:
-                print(" ✗ Messung fehlgeschlagen")
+                # Keine gültige Messung (noch keine, oder Instrument wartet)
+                time.sleep(poll_interval)
                 continue
 
-            # Speichern
+            # Duplikat-Schutz
+            key = measurement_key(measurement)
+            if key == last_key:
+                time.sleep(poll_interval)
+                continue
+
+            # Neue Messung! Speichern.
+            last_key = key
+            count += 1
+
             point = StagingPoint(
-                pid=pid_input,
-                x=measurement["x"],
-                y=measurement["y"],
-                z=measurement["z"],
-                source="geocom",
+                pid=measurement.pid,
+                x=measurement.e,
+                y=measurement.n,
+                z=measurement.h,
+                source="geocom_gsi",
             )
             db.insert(point)
-            count += 1
-            last_pid = pid_input
 
-            print(f" ✓  X={measurement['x']:.3f}  Y={measurement['y']:.3f}  Z={measurement['z']:.3f}")
+            print(f"  [{count:4d}] {measurement.pid:<12}"
+                  f"  E={measurement.e:12.3f}"
+                  f"  N={measurement.n:12.3f}"
+                  f"  H={measurement.h:8.3f}")
+
+            time.sleep(poll_interval)
 
     except KeyboardInterrupt:
-        print("\n  Abgebrochen.")
+        print(f"\n\n  Beendet. {count} Punkte gespeichert in '{db_path}'")
+        if count > 0:
+            print(f"  Nächster Schritt: surveylog build {db_path} ausgabe.gpkg\n")
     finally:
         conn.disconnect()
-        print(f"\n  {count} Punkte gespeichert in '{db_path}'")
-        print(f"  Nächster Schritt: surveylog build {db_path} ausgabe.gpkg\n")
