@@ -1,26 +1,30 @@
 """
 GSI-Parser für surveylog.
 
-Das TS07 sendet Messdaten im GSI-Format (Geotechnisches Serial Interface).
-Der Befehl %R1Q,2115: fordert den letzten Messsatz als GSI-String an.
+Unterstützt GSI8 und GSI16, sowohl als GeoCOM-Response (%R1P,...)
+als auch als direkte GSI-Zeile (*110002+...).
 
-GSI-Wort-Format (GSI-8):
-  IIIUU+VVVVVVVV
-  III = Word-Index (2-stellig + 1 Stelle Unterindex, z.B. 110 → Index 11)
-  UU  = Einheit (2 Zeichen, z.B. 00, 06, ..)
-  +/- = Vorzeichen
-  VVVVVVVV = Wert (8 Zeichen, führende Nullen)
+GSI-Wort-Format:
+  GSI8:  IIIUU+VVVVVVVV        (8-stelliger Wert)
+  GSI16: IIIIUU+VVVVVVVVVVVVVVVV  (16-stelliger Wert)
 
-GSI-16 hat längere Wertefelder (16 Zeichen).
+  III/IIII = Word-Index (erste 2 Ziffern sind der eigentliche Index)
+  UU       = Einheit/Format-Info
+  +/-      = Vorzeichen
+  V...     = Wert (führende Nullen, letzte 3 Stellen = mm)
 
 Relevante Word-Indizes (erste 2 Ziffern):
-  11  → PID / Punktnummer (alphanumerisch)
+  11  → PID / Punktnummer
   81  → Easting  (E / Rechtswert) in mm → /1000 = Meter
   82  → Northing (N / Hochwert)   in mm → /1000 = Meter
   83  → Height   (H / Höhe)       in mm → /1000 = Meter
 
-Beispiel-Response vom TS07:
-  %R1P,0,0:0,110001+00000FP1 81..00+00123456 82..00+00654321 83..00+00001234
+Beispiele vom TS07 (GSI16):
+  Als GeoCOM-Response:
+    %R1P,0,0:0,*110002+0000000000FP0001 810006+0000000001986199 820006+0000000007347358 830006+0000000000012034
+
+  Als direkte GSI-Zeile (wenn Datenausgabe = Interface):
+    *110002+0000000000FP0001 810006+0000000001986199 820006+0000000007347358 830006+0000000000012034
 """
 
 import re
@@ -40,41 +44,50 @@ class GSIMeasurement:
 
 def _parse_gsi_words(payload: str) -> dict:
     """
-    Parst GSI-Wörter aus dem Payload-Teil einer GSI-Response.
+    Parst GSI-Wörter aus einem Payload-String.
 
-    GSI-Wörter sind durch Leerzeichen getrennt.
-    Jedes Wort beginnt mit einer 2-stelligen Index-Zahl.
+    Wörter sind durch Leerzeichen getrennt.
+    Jedes Wort: Prefix (Ziffern + Info) + Vorzeichen + Wert.
+    Index = erste 2 Ziffern des Prefix.
 
-    Gibt {index_int: wert_string} zurück, wobei index_int
-    die ersten 2 Ziffern des Word-Tokens sind.
+    Gibt {index: wert_string} zurück.
     """
     words = {}
+    # * am Anfang entfernen (GSI-Zeilenstarter)
+    payload = payload.lstrip('*').strip()
+
     for token in payload.split():
-        # Token muss mit Ziffer beginnen und ein +/- enthalten
-        if not token[0].isdigit():
+        if not token:
             continue
+        # Vorzeichen finden (+ oder - nach dem Prefix)
         pm = token.find('+')
         if pm == -1:
-            pm = token.find('-')
-        if pm == -1:
+            pm = token.find('-', 1)  # ab Position 1, um führendes - zu überspringen
+        if pm <= 0:
             continue
-        prefix = token[:pm]   # z.B. '110001' oder '81..00'
-        value  = token[pm:]   # z.B. '+00000FP1' oder '+00123456'
-        # Index = erste 2 Ziffern
+
+        prefix = token[:pm]
+        value  = token[pm:]
+
+        # Erste 2 Ziffern des Prefix = Index
         digits = re.match(r'(\d+)', prefix)
         if not digits:
             continue
-        full_index = digits.group(1)
-        index = int(full_index[:2])  # immer erste 2 Ziffern
+        index = int(digits.group(1)[:2])
         words[index] = value
+
     return words
 
 
 def _gsi_to_float(value: str) -> Optional[float]:
     """
-    Konvertiert einen GSI-Wert zu float (Meter).
-    GSI speichert Koordinaten in mm (implizit 3 Nachkommastellen).
-    Beispiel: '+00123456' → 123.456 m
+    Konvertiert einen GSI-Wert zu float in Meter.
+
+    GSI speichert Koordinaten mit implizit 3 Nachkommastellen (mm).
+    Beispiele:
+      '+0000000001986199' → 1986.199 m  (GSI16)
+      '+00123456'         →  123.456 m  (GSI8)
+      '-00001234'         →   -1.234 m
     """
     try:
         sign = -1 if value.startswith('-') else 1
@@ -86,44 +99,66 @@ def _gsi_to_float(value: str) -> Optional[float]:
 
 def _gsi_to_pid(value: str) -> Optional[str]:
     """
-    Extrahiert PID aus einem GSI Word-11-Wert.
+    Extrahiert PID aus einem GSI-Wort-11-Wert.
     Entfernt Vorzeichen und führende Nullen.
-    Beispiel: '+00000FP00010001' → 'FP00010001'
+
+    Beispiele:
+      '+0000000000FP0001'  → 'FP0001'
+      '+0000000000LE01'    → 'LE01'
+      '+00000FP00010001'   → 'FP00010001'
     """
     raw = value.lstrip('+-').lstrip('0')
     return raw if raw else None
 
 
+def _extract_gsi_payload(response: str) -> Optional[str]:
+    """
+    Extrahiert den GSI-Payload aus verschiedenen Response-Formaten.
+
+    Unterstützt:
+    1. GeoCOM-Response: %R1P,0,0:0,*110002+...
+    2. Direkte GSI-Zeile: *110002+...
+    3. GeoCOM ohne *: %R1P,0,0:0,110002+...
+    """
+    response = response.strip()
+
+    if '%R1P' in response:
+        # GeoCOM-Response: RC prüfen
+        rc_match = re.search(r'%R1P,\d+,\d+:(\d+)', response)
+        if rc_match:
+            rc = int(rc_match.group(1))
+            if rc not in (0, 1283, 1284, 1285, 1288, 1289):
+                return None
+
+        # Payload nach RC extrahieren
+        payload_match = re.search(r'%R1P,\d+,\d+:\d+,(.*)', response)
+        if not payload_match:
+            return None
+        return payload_match.group(1).strip()
+
+    elif response.startswith('*') or (response and response[0].isdigit()):
+        # Direkte GSI-Zeile
+        return response
+
+    return None
+
+
 def parse_gsi_response(response: str) -> Optional[GSIMeasurement]:
     """
-    Parst eine vollständige GeoCOM/GSI-Response.
+    Parst eine GSI-Response (GeoCOM oder direkt).
 
-    Erwartet: %R1P,0,0:RC,<GSI-Payload>
     Gibt GSIMeasurement zurück oder None wenn kein gültiger Datensatz.
     """
-    if not response or '%R1P' not in response:
+    if not response:
         return None
 
-    # Return-Code prüfen
-    rc_match = re.search(r'%R1P,\d+,\d+:(\d+)', response)
-    if rc_match:
-        rc = int(rc_match.group(1))
-        # Nur OK (0) und bekannte Warnings sind gültig
-        if rc not in (0, 1283, 1284, 1285, 1288, 1289):
-            return None
-
-    # GSI-Payload extrahieren (nach RC)
-    payload_match = re.search(r'%R1P,\d+,\d+:\d+,(.*)', response)
-    if not payload_match:
-        return None
-
-    payload = payload_match.group(1).strip()
+    payload = _extract_gsi_payload(response)
     if not payload:
         return None
 
     words = _parse_gsi_words(payload)
 
-    # PID (Word-Index 11)
+    # PID (Word 11)
     pid_raw = words.get(11)
     if pid_raw is None:
         return None

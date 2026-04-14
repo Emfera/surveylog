@@ -35,6 +35,7 @@ class ConnectionConfig:
     timeout: float = 5.0               # Timeout in Sekunden
     measure_wait: float = 0.8          # Wartezeit nach TMC_DO_MEASURE
     reflectorless: bool = True         # True = reflektorlos (ohne Prisma)
+    reconnect_delay: float = 3.0       # Wartezeit vor Reconnect-Versuch
 
 
 class TotalstationConnection:
