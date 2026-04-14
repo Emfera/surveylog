@@ -166,3 +166,7 @@ class CodeTable:
 
     def __repr__(self) -> str:
         return f"CodeTable({len(self)} Codes)"
+
+
+# Fertige Standard-Instanz (direkt importierbar)
+CODE_TABLE = CodeTable()
