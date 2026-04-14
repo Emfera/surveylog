@@ -33,7 +33,7 @@ def measure_point(conn: TotalstationConnection, config: ConnectionConfig) -> Opt
     Gibt {"x": ..., "y": ..., "z": ...} zurück oder None bei Fehler.
     """
     # Messung auslösen
-    mode = TMC_MODE.DIST_REFL_LESS if config.reflectorless else TMC_MODE.DFLT
+    mode = TMC_MODE.REFLLESS if config.reflectorless else TMC_MODE.DEF_DIST
     result = conn.send_command(RPC.TMC_DO_MEASURE, mode, 1)
 
     rc = result.get("rc", -1)
