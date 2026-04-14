@@ -15,16 +15,23 @@ GSI-Wort-Format:
 
 Relevante Word-Indizes (erste 2 Ziffern):
   11  → PID / Punktnummer
+
+  Mit Maske 1 (TS07 Standard, Koordinaten):
+  21  → Easting  (E / Rechtswert) in mm → /1000 = Meter
+  22  → Northing (N / Hochwert)   in mm → /1000 = Meter
+  31  → Height   (H / Höhe)       in mm → /1000 = Meter
+
+  Alternative Indizes (andere Masken):
   81  → Easting  (E / Rechtswert) in mm → /1000 = Meter
   82  → Northing (N / Hochwert)   in mm → /1000 = Meter
   83  → Height   (H / Höhe)       in mm → /1000 = Meter
 
-Beispiele vom TS07 (GSI16):
+Beispiele vom TS07 (GSI16, Maske 1):
+  Als direkte GSI-Zeile:
+    *110007+0000000000LE01019 21.032+0000000011112846 22.032+0000000007350902 31.06+0000000000054191
+
   Als GeoCOM-Response:
     %R1P,0,0:0,*110002+0000000000FP0001 810006+0000000001986199 820006+0000000007347358 830006+0000000000012034
-
-  Als direkte GSI-Zeile (wenn Datenausgabe = Interface):
-    *110002+0000000000FP0001 810006+0000000001986199 820006+0000000007347358 830006+0000000000012034
 """
 
 import re
@@ -166,10 +173,11 @@ def parse_gsi_response(response: str) -> Optional[GSIMeasurement]:
     if not pid:
         return None
 
-    # Koordinaten (81=E, 82=N, 83=H)
-    e_raw = words.get(81)
-    n_raw = words.get(82)
-    h_raw = words.get(83)
+    # Koordinaten: Maske 1 = 21/22/31, andere Masken = 81/82/83
+    # Probiere beide Varianten, Maske 1 hat Vorrang
+    e_raw = words.get(21) or words.get(81)
+    n_raw = words.get(22) or words.get(82)
+    h_raw = words.get(31) or words.get(83)
 
     if None in (e_raw, n_raw, h_raw):
         return None
