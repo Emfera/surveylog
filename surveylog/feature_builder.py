@@ -312,3 +312,17 @@ class FeatureBuilder:
             "INSERT INTO gpkg_geometry_columns VALUES (?,?,?,?,?,?)",
             (table, "geom", geom_type, 4326, 1, 0)
         )
+
+
+def build_geopackage(points, output_path: str, crs: int = 4326) -> dict:
+    """
+    Wrapper-Funktion: Baut ein GeoPackage aus einer Liste von StagingPoints.
+    Gibt {"points": n, "lines": n, "polygons": n} zurück.
+    """
+    builder = FeatureBuilder(output_path, crs=crs)
+    result = builder.build(points)
+    return {
+        "points": result.point_count,
+        "lines": result.line_count,
+        "polygons": result.polygon_count,
+    }
