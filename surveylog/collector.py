@@ -1,20 +1,18 @@
 """
-GSI Stream-Collector für surveylog.
+GSI Collector für surveylog.
 
-Architektur (passives Lauschen):
-  Der TS07 schickt nach jeder Messung automatisch einen GSI-Datensatz
-  über die Bluetooth-Verbindung. surveylog verbindet sich via TCP-Bridge
-  und liest den eingehenden Stream — ohne selbst etwas zu senden.
-
-  1. TCP-Verbindung zu BT/TCP Bridge (localhost:4444)
-  2. Eingehende Bytes lesen und zu Zeilen zusammensetzen
-  3. Jede Zeile auf GSI-Format prüfen
-  4. Neue Messungen in die DB speichern (Duplikat-Schutz)
+Architektur (aktives Polling mit Stream-Lesen):
+  1. surveylog sendet %R1Q,2115: an die Totalstation (GeoCOM Request)
+  2. TS07 antwortet mit letztem Messsatz im GSI-Format
+  3. surveylog liest alle verfügbaren Bytes (mit kurzem Timeout)
+  4. GSI-Zeilen werden aus dem Puffer extrahiert und geparst
+  5. Duplikat-Schutz: nur neue Messungen werden gespeichert
+  6. Kurze Pause, dann wieder von vorne
 
 Das Instrument behält die volle Kontrolle:
   - PID wird am TS07 eingegeben
   - Messung wird am TS07 ausgelöst
-  - surveylog lauscht nur und speichert
+  - surveylog pollt und speichert automatisch
 
 Verbindung über TCP-Bridge (Android):
   BT/TCP Bridge App: Bluetooth SPP → TCP localhost:4444
@@ -32,11 +30,15 @@ from .staging import StagingDB, StagingPoint
 
 logger = logging.getLogger(__name__)
 
+# GeoCOM Request: letzten Messsatz als GSI abrufen
+GEOCOM_GET_LAST_GSI = b"%R1Q,2115:\r\n"
+
 
 @dataclass
 class CollectorConfig:
-    """Konfiguration für den Stream-Collector."""
-    timeout: float = 10.0          # Socket-Timeout (Sekunden ohne Daten)
+    """Konfiguration für den Collector."""
+    poll_interval: float = 0.5     # Sekunden zwischen Polls
+    read_timeout: float = 1.0      # Timeout beim Lesen der Antwort
     reconnect_delay: float = 3.0   # Wartezeit vor Reconnect-Versuch
 
 
@@ -47,79 +49,85 @@ def _tcp_host_port(port_str: str):
     return host, int(port)
 
 
-def _connect_tcp(host: str, port: int, timeout: float) -> socket.socket:
-    """Baut TCP-Verbindung auf. Gibt Socket zurück oder wirft Exception."""
+def _connect_tcp(host: str, port: int, timeout: float = 5.0) -> socket.socket:
+    """Baut TCP-Verbindung auf."""
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.settimeout(timeout)
     s.connect((host, port))
     return s
 
 
-def _read_lines(sock: socket.socket, buf: bytearray):
+def _read_available(sock: socket.socket, read_timeout: float) -> str:
     """
-    Liest Bytes aus dem Socket und gibt vollständige Zeilen zurück.
+    Liest alle verfügbaren Bytes aus dem Socket.
 
-    Der TS07 trennt Datensätze mit \\r\\n oder \\n.
-    Unvollständige Daten bleiben im buf (bytearray) für den nächsten Aufruf.
+    Setzt kurzen Timeout, liest solange Daten kommen,
+    gibt alles als String zurück.
     """
+    sock.settimeout(read_timeout)
+    data = b""
     try:
-        chunk = sock.recv(1024)
+        while True:
+            chunk = sock.recv(1024)
+            if not chunk:
+                raise ConnectionError("Verbindung getrennt")
+            data += chunk
+            # Kurzen Timeout für weitere Chunks
+            sock.settimeout(0.1)
     except socket.timeout:
-        return []
-    if not chunk:
-        raise ConnectionError("Verbindung vom Gegensteller getrennt")
+        pass  # Keine weiteren Daten — normal
+    return data.decode("ascii", errors="replace")
 
-    buf.extend(chunk)
+
+def _extract_gsi_lines(text: str) -> list:
+    """
+    Extrahiert alle potentiellen GSI-Zeilen aus einem Text-Block.
+
+    Sucht nach Zeilen die mit * beginnen oder %R1P enthalten.
+    """
     lines = []
-
-    while True:
-        # Suche nach Zeilenende (\n oder \r\n)
-        idx = buf.find(b"\n")
-        if idx == -1:
-            break
-        line = buf[:idx].decode("ascii", errors="replace").strip()
-        del buf[:idx + 1]
-        if line:
-            lines.append(line)
-
+    for line in text.replace("\r", "\n").split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        lines.append(line)
     return lines
 
 
 def run_collector(conn_config: ConnectionConfig, db_path: str,
-                  poll_interval: float = 0.3):
+                  poll_interval: float = 0.5):
     """
-    Startet den Stream-Collector.
+    Startet den Polling-Collector.
 
-    Lauscht auf eingehende GSI-Datensätze vom TS07 und speichert neue Messungen.
+    Pollt kontinuierlich und speichert neue Messungen.
     Läuft bis Ctrl+C.
     """
     db = StagingDB(db_path)
 
-    print(f"\n  surveylog — GSI Stream Collector")
+    use_tcp = conn_config.port.startswith("tcp://")
+    if not use_tcp:
+        raise NotImplementedError(
+            "Nur TCP unterstützt — bitte BT/TCP Bridge App verwenden"
+        )
+
+    host, port = _tcp_host_port(conn_config.port)
+
+    print(f"\n  surveylog — GSI Collector")
     print(f"  Port:  {conn_config.port}")
     print(f"  DB:    {db_path}")
     print(f"\n  Bedienung: Alles am Instrument (TS07)")
     print(f"  PID eingeben + Messung auslösen → surveylog speichert automatisch")
     print(f"  Beenden: Ctrl+C\n")
 
-    # TCP oder seriell?
-    use_tcp = conn_config.port.startswith("tcp://")
-    if use_tcp:
-        host, port = _tcp_host_port(conn_config.port)
-    else:
-        raise NotImplementedError(
-            "Serieller Modus nicht implementiert — bitte TCP-Bridge verwenden"
-        )
-
     last_key = None
     count = 0
+    errors = 0
 
     def connect_loop() -> socket.socket:
-        """Verbindet, mit stummem Retry bei Fehler."""
         while True:
             print(f"  Verbinde mit {conn_config.port}...", end="", flush=True)
             try:
-                s = _connect_tcp(host, port, conn_config.timeout)
+                s = _connect_tcp(host, port, timeout=5.0)
                 print(" ✓")
                 return s
             except OSError as e:
@@ -128,29 +136,48 @@ def run_collector(conn_config: ConnectionConfig, db_path: str,
                 time.sleep(conn_config.reconnect_delay)
 
     sock = connect_loop()
-    buf = bytearray()
     print("  Warte auf Messungen...\n")
 
     try:
         while True:
+            # GeoCOM Request senden
             try:
-                lines = _read_lines(sock, buf)
-            except (ConnectionError, OSError) as e:
-                logger.warning(f"Verbindungsabbruch: {e} — reconnecte...")
+                sock.settimeout(5.0)
+                sock.sendall(GEOCOM_GET_LAST_GSI)
+            except OSError as e:
+                errors += 1
+                logger.warning(f"Sendefehler ({errors}x): {e} — reconnecte...")
                 try:
                     sock.close()
                 except OSError:
                     pass
-                buf.clear()
                 time.sleep(conn_config.reconnect_delay)
                 sock = connect_loop()
                 print("  Warte auf Messungen...\n")
                 continue
 
-            for line in lines:
-                logger.debug(f"← {line}")
+            # Antwort lesen
+            try:
+                raw = _read_available(sock, read_timeout=1.0)
+            except ConnectionError as e:
+                errors += 1
+                logger.warning(f"Lesefehler ({errors}x): {e} — reconnecte...")
+                try:
+                    sock.close()
+                except OSError:
+                    pass
+                time.sleep(conn_config.reconnect_delay)
+                sock = connect_loop()
+                print("  Warte auf Messungen...\n")
+                continue
 
-                # GSI parsen
+            errors = 0
+
+            if raw:
+                logger.debug(f"← {repr(raw)}")
+
+            # Alle Zeilen prüfen
+            for line in _extract_gsi_lines(raw):
                 measurement = parse_gsi_response(line)
                 if measurement is None:
                     continue
@@ -160,7 +187,7 @@ def run_collector(conn_config: ConnectionConfig, db_path: str,
                 if key == last_key:
                     continue
 
-                # Neue Messung! Speichern.
+                # Neue Messung!
                 last_key = key
                 count += 1
 
@@ -177,6 +204,8 @@ def run_collector(conn_config: ConnectionConfig, db_path: str,
                       f"  E={measurement.e:12.3f}"
                       f"  N={measurement.n:12.3f}"
                       f"  H={measurement.h:8.3f}")
+
+            time.sleep(poll_interval)
 
     except KeyboardInterrupt:
         print(f"\n\n  Beendet. {count} Punkte gespeichert in '{db_path}'")
