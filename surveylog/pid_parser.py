@@ -128,3 +128,17 @@ def validate_pid_sequence(pids: list[str]) -> dict:
         "warnings": warnings,
         "features": features,
     }
+
+
+def next_pid(pid: str) -> str:
+    """
+    Gibt den nächsten PID in der Sequenz zurück (Sequenznummer +1).
+    Beispiel: 'FP00010003' → 'FP00010004'
+    """
+    parsed = parse_pid(pid)
+    if parsed is None:
+        return pid
+    next_seq = parsed.seq + 1
+    if next_seq > 9999:
+        next_seq = 1
+    return f"{parsed.code}{parsed.se_id:04d}{next_seq:04d}"
