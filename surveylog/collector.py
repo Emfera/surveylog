@@ -198,7 +198,7 @@ def run_collector(conn_config: ConnectionConfig, db_path: str,
                     z=measurement.h,
                     source="geocom_gsi",
                 )
-                db.insert(point)
+                db.add_point(point)
 
                 print(f"  [{count:4d}] {measurement.pid:<12}"
                       f"  E={measurement.e:12.3f}"
