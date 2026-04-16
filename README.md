@@ -1,6 +1,6 @@
 # surveylog
 
-**Sensorunabhängige Vermessungs-Datenpipeline für archäologische Feldarbeit**
+**Sensorunabhängige Vermessungs-Datenpipeline für archäologische Feldarbeit - proof of concept und Spielwiese**
 
 Entwickelt für den Einsatz mit Leica TS07 (und anderen Totalstationen mit GeoCOM-Protokoll) sowie GNSS-CSV-Exporten. Läuft auf **Android/Termux**, Linux und Windows — ohne QGIS oder andere GUI-Abhängigkeiten.
 
