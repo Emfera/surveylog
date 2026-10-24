@@ -3,24 +3,7 @@
 **Sensorunabhängige Vermessungs-Datenpipeline für archäologische Feldarbeit - proof of concept und Spielwiese**
 
 > [!NOTE]
-> **Status: Proof of Concept – wird nicht weiterentwickelt** (Stand Oktober 2026)
->
-> surveylog war ein Vorläufer von **[OASP](https://github.com/Emfera/OASP)** (Open Archaeological Surveying Pipeline) und bleibt als Dokumentation der Versuche öffentlich. Der Code funktioniert wie beschrieben, wird aber nicht mehr gepflegt. Weiterentwickelt wird in [Emfera/OASP](https://github.com/Emfera/OASP); Experimente und Stand: [emfera.github.io/OASP](https://emfera.github.io/OASP/).
-
-## Einordnung
-
-Erster Versuch einer sensorunabhängigen Pipeline: Messung per GeoCOM vom Handy auslösen, PID am Handy eingeben, GNSS-CSV importieren, GeoPackage erzeugen. Proof of Concept und Spielwiese.
-
-**In OASP übernommen:**
-- Sensorunabhängigkeit: Tachymeter und GNSS-CSV in dieselbe Kontrolle (OASP Review).
-- Code-Katalog mit Punkten, Linien und Flächen als Grundidee der wählbaren Codesysteme.
-- Staging-Datenbank vor dem Export als Grundidee der Trennung Rohdaten / bearbeitete Daten.
-- GeoPackage als Ergebnis: Ziel von OASP ist ein Projekt-GeoPackage je Maßnahme mit Messdaten, 3D-Oberflächen, Harris-Matrix, SE-Beschreibung, Fund- und Probenliste. Die BDA-Abgabe (SHP, DXF, DWG, Excel) ist ein Exportpfad daraus.
-
-**Bewusst nicht übernommen:**
-- Auslösen per GeoCOM vom Handy: entschieden wurde Auslösung am Tachymeter, der Logger hört passiv auf GSI.
-- Festes PID-Schema `CCSSSSNNNN`: ersetzt durch wählbare Codesysteme (Novetus26, Sudan14, LBI20, ARDIG26, eigene).
-- Erzeugung des GeoPackage in Python auf dem Handy: OASP baut es im Browser.
+> **Proof of Concept, wird nicht weiterentwickelt.** Weiterentwicklung in [Emfera/OASP](https://github.com/Emfera/OASP).
 
 ---
 
