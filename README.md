@@ -15,11 +15,12 @@ Erster Versuch einer sensorunabhängigen Pipeline: Messung per GeoCOM vom Handy 
 - Sensorunabhängigkeit: Tachymeter und GNSS-CSV in dieselbe Kontrolle (OASP Review).
 - Code-Katalog mit Punkten, Linien und Flächen als Grundidee der wählbaren Codesysteme.
 - Staging-Datenbank vor dem Export als Grundidee der Trennung Rohdaten / bearbeitete Daten.
+- GeoPackage als Ergebnis: Ziel von OASP ist ein Projekt-GeoPackage je Maßnahme mit Messdaten, 3D-Oberflächen, Harris-Matrix, SE-Beschreibung, Fund- und Probenliste. Die BDA-Abgabe (SHP, DXF, DWG, Excel) ist ein Exportpfad daraus.
 
 **Bewusst nicht übernommen:**
 - Auslösen per GeoCOM vom Handy: entschieden wurde Auslösung am Tachymeter, der Logger hört passiv auf GSI.
 - Festes PID-Schema `CCSSSSNNNN`: ersetzt durch wählbare Codesysteme (Novetus26, Sudan14, LBI20, ARDIG26, eigene).
-- GeoPackage als Ausgabe: Das BDA nimmt für die Abgabe nur SHP, DXF und DWG; OASP schreibt das Maßnahmenpolygon als Shapefile nach BDA-Vorlage.
+- Erzeugung des GeoPackage in Python auf dem Handy: OASP baut es im Browser.
 
 ---
 
